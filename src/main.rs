@@ -48,7 +48,7 @@ fn main() {
         line::draw_line(points[i].0, points[i].1, points[next_index].0, points[next_index].1, &white, &mut framebuffer);
     }
 
-    bmp::save_framebuffer_to_bmp(&framebuffer, "output.bmp");
+    bmp::save_framebuffer_to_bmp(&framebuffer, "out.bmp");
 }
 
 
