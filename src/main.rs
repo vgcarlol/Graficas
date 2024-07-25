@@ -1,101 +1,113 @@
-extern crate nalgebra_glm as glm;
+mod color;
+mod framebuffer;
+mod bmp;
+mod line;
 
-use glm::{Vec2, vec2};
-use std::fs::File;
-use std::io::prelude::*;
+use framebuffer::FrameBuffer;
+use color::Color;
 
 fn main() {
-    // Polígonos
-    let polygons = vec![
-        vec![
-            vec2(165.0, 380.0), vec2(185.0, 360.0), vec2(180.0, 330.0),
-            vec2(207.0, 345.0), vec2(233.0, 330.0), vec2(230.0, 360.0),
-            vec2(250.0, 380.0), vec2(220.0, 385.0), vec2(205.0, 410.0),
-            vec2(193.0, 383.0),
-        ],
-        vec![
-            vec2(321.0, 335.0), vec2(288.0, 286.0), vec2(339.0, 251.0), vec2(374.0, 302.0),
-        ],
-        vec![
-            vec2(377.0, 249.0), vec2(411.0, 197.0), vec2(436.0, 249.0),
-        ],
-        vec![
-            vec2(413.0, 177.0), vec2(448.0, 159.0), vec2(502.0, 88.0), vec2(553.0, 53.0),
-            vec2(535.0, 36.0), vec2(676.0, 37.0), vec2(660.0, 52.0), vec2(750.0, 145.0),
-            vec2(761.0, 179.0), vec2(672.0, 192.0), vec2(659.0, 214.0), vec2(615.0, 214.0),
-            vec2(632.0, 230.0), vec2(580.0, 230.0), vec2(597.0, 215.0), vec2(552.0, 214.0),
-            vec2(517.0, 144.0), vec2(466.0, 180.0),
-        ],
-        vec![
-            vec2(682.0, 175.0), vec2(708.0, 120.0), vec2(735.0, 148.0), vec2(739.0, 170.0),
-        ],
+    let mut framebuffer = FrameBuffer::new(800, 600);
+    let blue = Color::new(0, 0, 255);  // Color azul para el relleno del polígono 2 
+    let yellow = Color::new(255, 255, 0); // Color amarillo para el relleno del polígono 1
+    let white = Color::new(255, 255, 255); // Color para las orillas
+
+    // Polígono 1
+    let points = vec![
+        (165, 380), (185, 360), (180, 330), (207, 345),
+        (233, 330), (230, 360), (250, 380), (220, 385),
+        (205, 410), (193, 383)
     ];
 
-    // Crea un image buffer
-    let width = 800;
-    let height = 600;
-    let mut buffer = vec![vec![0; width]; height];
+    // Polígono 2
+    let points_poly2 = vec![
+        (321, 335), (288, 286), (339, 251), (374, 302)
+    ];
 
-    for polygon in polygons {
-        scanline_fill(&polygon, &mut buffer);
+    // Rellenar el polígono 1
+    fill_polygon(&points, &yellow, &mut framebuffer);
+
+    // Rellenar y dibujar el polígono 2
+    fill_polygon(&points_poly2, &blue, &mut framebuffer);
+    draw_edges(&points_poly2, &white, &mut framebuffer);
+
+    // Dibujar las orillas del polígono después
+    for i in 0..points.len() {
+        let next_index = (i + 1) % points.len();
+        line::draw_line(points[i].0, points[i].1, points[next_index].0, points[next_index].1, &white, &mut framebuffer);
     }
 
-    // Buffer a BMP
-    save_to_bmp(&buffer, "out.bmp").expect("Fallo en Guardar el BMP");
+    bmp::save_framebuffer_to_bmp(&framebuffer, "output.bmp");
 }
 
-fn scanline_fill(polygon: &Vec<Vec2>, buffer: &mut Vec<Vec<i32>>) {
-    let min_y = polygon.iter().map(|v| v.y as usize).min().unwrap();
-    let max_y = polygon.iter().map(|v| v.y as usize).max().unwrap();
 
-    for y in min_y..=max_y {
-        // Encuentra intersecciones
-        let mut intersections = vec![];
-        for i in 0..polygon.len() {
-            let p1 = &polygon[i];
-            let p2 = &polygon[(i + 1) % polygon.len()];
-            if (p1.y as usize <= y && p2.y as usize > y) || (p2.y as usize <= y && p1.y as usize > y) {
-                let x = p1.x + (y as f32 - p1.y) * (p2.x - p1.x) / (p2.y - p1.y);
-                intersections.push(x as usize);
+
+fn fill_polygon(points: &[(i32, i32)], color: &Color, framebuffer: &mut FrameBuffer) {
+    if points.len() < 3 { return; }
+
+    // Estructura para almacenar los bordes activos
+    let mut edges: Vec<(i32, i32, f64, f64)> = Vec::new();  // (x_min, y_max, x, dx)
+
+    // Construir la lista de bordes, ignorando los bordes horizontales
+    for i in 0..points.len() {
+        let j = (i + 1) % points.len();
+        let (mut x1, mut y1, mut x2, mut y2) = (points[i].0, points[i].1, points[j].0, points[j].1);
+
+        if y1 != y2 {
+            if y1 > y2 {
+                std::mem::swap(&mut x1, &mut x2);
+                std::mem::swap(&mut y1, &mut y2);
+            }
+            let dx = (x2 as f64 - x1 as f64) / (y2 as f64 - y1 as f64);
+            edges.push((y1, y2, x1 as f64, dx));
+        }
+    }
+
+    // Ordenar los bordes por y_min y luego por x para bordes con el mismo y_min
+    edges.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.partial_cmp(&b.2).unwrap()));
+
+    // Rellenar el polígono
+    let mut active_edges: Vec<(i32, f64, f64)> = Vec::new();  // (y_max, x, dx)
+    let mut y = edges.first().map(|e| e.0).unwrap_or(0);
+
+    while !edges.is_empty() || !active_edges.is_empty() {
+        // Añadir nuevas aristas activas que empiezan en la línea actual
+        while let Some(edge) = edges.first() {
+            if edge.0 > y { break; }
+            active_edges.push((edge.1, edge.2, edge.3));
+            edges.remove(0);
+        }
+
+        // Eliminar aristas activas que ya no son válidas
+        active_edges.retain(|e| e.0 > y);
+
+        // Ordenar aristas activas por x
+        active_edges.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+        // Rellenar entre pares de aristas activas
+        for pair in active_edges.chunks(2) {
+            if pair.len() < 2 { continue; }
+            let start_x = pair[0].1.round() as i32;
+            let end_x = pair[1].1.round() as i32;
+            for x in start_x..=end_x {
+                framebuffer.set_pixel(x, y, color);
             }
         }
-        intersections.sort();
 
-        // Rellenar entre intersecciones
-        for pair in intersections.chunks(2) {
-            if pair.len() == 2 {
-                for x in pair[0]..=pair[1] {
-                    buffer[y][x] = 1;
-                }
-            }
+        // Avanzar a la siguiente línea
+        y += 1;
+
+        // Actualizar x para aristas activas
+        for edge in active_edges.iter_mut() {
+            edge.1 += edge.2;
         }
     }
 }
 
-fn save_to_bmp(buffer: &Vec<Vec<i32>>, filename: &str) -> std::io::Result<()> {
-    let width = buffer[0].len() as u32;
-    let height = buffer.len() as u32;
-    let mut file = File::create(filename)?;
-    file.write_all(b"BM")?;
-    file.write_all(&((54 + 3 * width * height) as u32).to_le_bytes())?;
-    file.write_all(&[0; 4])?;
-    file.write_all(&54u32.to_le_bytes())?;
-    file.write_all(&40u32.to_le_bytes())?;
-    file.write_all(&width.to_le_bytes())?;
-    file.write_all(&height.to_le_bytes())?;
-    file.write_all(&1u16.to_le_bytes())?;
-    file.write_all(&24u16.to_le_bytes())?;
-    file.write_all(&[0; 4])?;
-    file.write_all(&((3 * width * height) as u32).to_le_bytes())?;
-    file.write_all(&[0; 4])?;
-    file.write_all(&[0; 4])?;
-    file.write_all(&[0; 4])?;
-    file.write_all(&[0; 4])?;
-    for row in buffer.iter().rev() {
-        for &pixel in row.iter() {
-            let color = if pixel == 0 { [0u8, 0u8, 0u8] } else { [255u8, 255u8, 255u8] };
-            file.write_all(&color)?;
-        }
+
+fn draw_edges(points: &[(i32, i32)], color: &Color, framebuffer: &mut FrameBuffer) {
+    for i in 0..points.len() {
+        let next_index = (i + 1) % points.len();
+        line::draw_line(points[i].0, points[i].1, points[next_index].0, points[next_index].1, color, framebuffer);
     }
-    Ok(())
 }
